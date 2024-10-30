@@ -1,99 +1,179 @@
 #!/bin/bash
 
-# Обновление системы
+echo "*** Update and Upgrade ***"
 apt update -y && apt upgrade -y
+echo "Update and Upgrade finish ***"
 
-# Установка необходимых пакетов
+echo "*** Install linux-image-amd64 ***"
+sudo apt install linux-image-amd64 -y
+echo "Install linux-image-amd64 finish ***"
+
+echo "*** Reinstall initramfs-tools ***"
+sudo apt install --reinstall initramfs-tools -y
+echo "Reinstall initramfs-tools finish ***"
+
+echo "*** Install grub2, wimtools, ntfs-3g ***"
 apt install grub2 wimtools ntfs-3g -y
+echo "Install grub2, wimtools, ntfs-3g finish ***"
 
-# Получаем размер диска в GB и конвертируем в MB
+echo "*** Get the disk size in GB and convert to MB ***"
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
 disk_size_mb=$((disk_size_gb * 1024))
+echo "Get the disk size in GB and convert to MB finish ***"
 
-# Рассчитываем размер раздела (25% от общего размера)
-part_size_mb=$((disk_size_mb / 4))
+echo "*** Calculate partition size (50% of total size) ***"
+part_size_mb=$((disk_size_mb / 2))
+echo "Calculate partition size (50% of total size) finish ***"
 
-# Создаем GPT таблицу разделов
+echo "*** Create GPT partition table ***"
 parted /dev/sda --script -- mklabel gpt
+echo "Create GPT partition table finish ***"
 
-# Создаем два раздела
+echo "*** Create two partitions ***"
 parted /dev/sda --script -- mkpart primary ntfs 1MB ${part_size_mb}MB
-parted /dev/sda --script -- mkpart primary ntfs ${part_size_mb}MB $((2 * part_size_mb))MB
+echo "Create first partition"
+parted /dev/sda --script -- mkpart primary ntfs ${part_size_mb}MB 100%
+echo "Create second partition"
+echo "Create two partitions finish ***"
 
-# Сообщаем ядру о изменениях в таблице разделов
+echo "*** Inform kernel of partition table changes ***"
 partprobe /dev/sda
-sleep 30
-partprobe /dev/sda
-sleep 30
-partprobe /dev/sda
-sleep 30 
+sleep 60
 
-# Форматируем разделы
+echo "*** Check if partitions are created and formatted successfully ***"
+if lsblk /dev/sda1 && lsblk /dev/sda2; then
+    echo "Partitions created successfully"
+else
+    echo "Error: Partitions were not created successfully"
+    exit 1
+fi
+
+echo "*** Format the partitions ***"
 mkfs.ntfs -f /dev/sda1
+echo "Format partition sda1"
 mkfs.ntfs -f /dev/sda2
+echo "Format partition sda2"
+echo "Format partitions finish ***"
 
-echo "NTFS разделы созданы"
+echo "NTFS partitions created"
 
-# Создаем таблицу разделов для загрузчика
+echo "*** Install gdisk ***"
+sudo apt-get install gdisk -y
+echo "Install gdisk finish ***"
+
+echo "*** Run gdisk commands ***"
 echo -e "r\ng\np\nw\nY\n" | gdisk /dev/sda
+echo "Run gdisk commands finish ***"
 
-# Монтируем первый раздел
+echo "*** Mount /dev/sda1 to /mnt ***"
 mount /dev/sda1 /mnt
+echo "Mount /dev/sda1 to /mnt finish ***"
 
-# Подготавливаем директорию для Windows
+echo "*** Prepare directory for the Windows disk ***"
 cd ~
-mkdir windisk
+mkdir -p windisk
+echo "Prepare directory for the Windows disk finish ***"
 
-# Монтируем второй раздел
+echo "*** Mount /dev/sda2 to windisk ***"
 mount /dev/sda2 windisk
+echo "Mount /dev/sda2 to windisk finish ***"
 
-# Устанавливаем GRUB
+echo "*** Install GRUB ***"
 grub-install --root-directory=/mnt /dev/sda
+echo "Install GRUB finish ***"
 
-# Редактируем конфигурацию GRUB
-cd /mnt/boot/grub
-cat <<EOF > grub.cfg
+echo "*** Edit GRUB configuration ***"
+cat <<EOF > /mnt/boot/grub/grub.cfg
 menuentry "Windows Installer" {
     insmod ntfs
-    search --set=root --file=/bootmgr
-    ntldr /bootmgr
+    search --no-floppy --set=root --file /bootmgr
+    chainloader +1
     boot
 }
 EOF
+echo "Edit GRUB configuration finish ***"
 
-# Скачиваем ISO образ Windows
+echo "*** Prepare winfile directory ***"
 cd /root/windisk
-mkdir winfile
-wget -O win10.iso --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" https://t.ly/d2Tlr
+mkdir -p winfile
+echo "Prepare winfile directory finish ***"
 
-# Монтируем ISO образ Windows
-mount -o loop win10.iso winfile
+# Download Windows ISO
+read -p "Do you want to download Windows.iso? (Y/N): " download_choice
 
-# Копируем файлы Windows на монтированный раздел
-rsync -avz --progress winfile/* /mnt
+if [[ "$download_choice" == "Y" || "$download_choice" == "y" ]]; then
+    read -p "Enter the URL for Windows.iso (leave blank to use default): " windows_url
+    if [ -z "$windows_url" ]; then
+        windows_url="https://bit.ly/3UGzNcB"  # Replace with actual default URL
+    fi
+    wget -O Windows.iso --user-agent="Mozilla/5.0" "$windows_url"
+    echo "Download completed"
+else
+    echo "Please upload the Windows ISO to 'root/windisk' and name it 'Windows.iso'."
+    read -p "Press any key to continue once uploaded..." -n1 -s
+fi
 
-# Размонтируем временные файловые системы
-umount winfile
+echo "*** Check if Windows ISO exists ***"
+if [ -f "Windows.iso" ]; then
+    mount -o loop Windows.iso winfile
+    rsync -avz --progress winfile/* /mnt
+    umount winfile
+    echo "Windows ISO processed successfully"
+else
+    echo "Windows.iso not found or failed to download"
+    exit 1
+fi
 
-# Скачиваем ISO образ VirtIO
-wget -O virtio.iso https://virtio-foundation.org/downloads/vioscsi/virtio-win-0.1.229-2.iso
+# Download Virtio ISO
+read -p "Do you want to download the Virtio drivers ISO? (Y/N): " download_choice
 
-# Монтируем ISO образ VirtIO
-mount -o loop virtio.iso winfile
+if [[ "$download_choice" == "Y" || "$download_choice" == "y" ]]; then
+    read -p "Enter the URL for Virtio.iso (leave blank to use default): " virtio_url
+    if [ -z "$virtio_url" ]; then
+        virtio_url="https://bit.ly/4d1g7Ht"  # Replace with actual default URL
+    fi
+    wget -O Virtio.iso --user-agent="Mozilla/5.0" "$virtio_url"
+    echo "Download completed"
+else
+    echo "Please upload Virtio drivers ISO to 'root/windisk' and name it 'Virtio.iso'."
+    read -p "Press any key to continue once uploaded..." -n1 -s
+fi
 
-# Создаем директорию для драйверов VirtIO
-mkdir -p /mnt/sources/virtio
+echo "*** Check if Virtio ISO exists ***"
+if [ -f "Virtio.iso" ]; then
+    mount -o loop Virtio.iso winfile
+    mkdir -p /mnt/sources/virtio
+    rsync -avz --progress winfile/* /mnt/sources/virtio
+    umount winfile
+    echo "Virtio drivers processed successfully"
+else
+    echo "Virtio.iso not found or failed to download"
+    exit 1
+fi
 
-# Копируем файлы драйверов VirtIO на целевой раздел
-rsync -avz --progress winfile/* /mnt/sources/virtio
-
-# Подготавливаем файл команд для обновления WIM
 cd /mnt/sources
+
 touch cmd.txt
 echo 'add virtio /virtio_drivers' >> cmd.txt
 
-# Обновляем boot.wim с добавлением драйверов VirtIO
-wimlib-imagex update boot.wim 2 < cmd.txt
+# Update boot.wim
+echo "*** List images in boot.wim ***"
+wimlib-imagex info boot.wim
+echo "Enter a valid image index from the list above:"
+read image_index
 
-# Перезагружаем систему
-reboot
+if [ -f boot.wim ]; then
+    wimlib-imagex update boot.wim $image_index < cmd.txt
+    echo "boot.wim updated successfully"
+else
+    echo "boot.wim not found"
+    exit 1
+fi
+
+# Reboot prompt
+read -p "Do you want to reboot the system now? (Y/N): " reboot_choice
+if [[ "$reboot_choice" == "Y" || "$reboot_choice" == "y" ]]; then
+    sudo reboot
+else
+    echo "Continuing without rebooting"
+fi
